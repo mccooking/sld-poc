@@ -4,7 +4,7 @@ A proof of concept for generating text with diffusion in a continuous latent spa
 
 It works in three parts. A codec turns every 4 tokens into one vector and can rebuild them. A diffusion model then generates whole sequences of these vectors at once, starting from noise and cleaning it up over a few passes, rather than emitting tokens left to right. The spectral variant runs that same diffusion on a DCT of the vectors, so the model settles the coarse structure first and fills in detail afterwards.
 
-![Pipeline: tokens to latent vectors, diffusion, and back to tokens](docs/pipeline.png)
+![Pipeline: tokens to latent vectors, diffusion, and back to tokens](docs/pipeline.svg)
 
 Since one vector carries 4 tokens, the diffuser deals with a quarter as many positions as a token-level model, and because it denoises in parallel it isn't locked into left-to-right order. The same property lets it infill and correct its own output, which autoregressive models can't.
 

@@ -8,11 +8,11 @@ Most language models predict one discrete token at a time. This follows the CALM
 
 There are three pieces. A codec compresses 4 tokens into one vector and reconstructs them. A diffusion model generates a sequence of those vectors in parallel, denoising from noise over several passes instead of going left to right. A spectral variant runs the same diffusion in the frequency domain, applying a DCT across positions so that coarse structure is set first and detail last.
 
-![End-to-end pipeline](docs/pipeline.png)
+![End-to-end pipeline](docs/pipeline.svg)
 
 Continuous vectors suit Gaussian diffusion better than discrete tokens do, and packing 4 tokens into each vector means the diffuser handles a quarter as many positions. Generating in parallel also makes infilling and self-correction possible, neither of which a left-to-right model can do.
 
-![Autoregressive generation versus parallel diffusion](docs/ar-vs-diffusion.png)
+![Autoregressive generation versus parallel diffusion](docs/ar-vs-diffusion.svg)
 
 ## What I built
 
@@ -36,7 +36,7 @@ The denoiser is a bidirectional transformer, width 512 and depth 8, over 16 posi
 
 Generation produces real TinyStories words and believable short fragments, but nothing coherent at the level of a sentence or story. The spectral variant looks about the same, with no clear gain. That fits the expectation that a frequency basis reorganises the problem without adding capacity.
 
-![Spectral diffusion: DCT across positions, denoise coarse to fine, inverse DCT](docs/spectral.png)
+![Spectral diffusion: DCT across positions, denoise coarse to fine, inverse DCT](docs/spectral.svg)
 
 The parallel decode does work: 50 denoising passes produce a 64-token sequence, against 64 sequential steps for an autoregressive model. The throughput figure I currently have comes from an unoptimised sampler and understates the real speed.
 
@@ -56,7 +56,7 @@ A bigger model, more steps, longer context, and few-step distillation. This is t
 
 Don't spend vectors on syntax a parser already knows. Print the fixed skeleton by rule and only encode the parts that vary.
 
-![AST chunking: a function skeleton with content holes encoded as vectors](docs/ast-chunking.png)
+![AST chunking: a function skeleton with content holes encoded as vectors](docs/ast-chunking.svg)
 
 A function such as `fn <name>() -> <ret> { <body> }` becomes a few content vectors instead of the 15 to 20 tokens it usually costs. Because the keywords, brackets, and arrows are printed by rule, the output is always syntactically valid, and that share of the tokens is reconstructed exactly. The parser is only used when preparing data, never at generation time.
 
@@ -64,7 +64,7 @@ A function such as `fn <name>() -> <ret> { <body> }` becomes a few content vecto
 
 Allocate vectors by how much information a span carries, not by token count.
 
-![Variable-size chunking: predictable spans collapse, dense spans split](docs/variable-k.png)
+![Variable-size chunking: predictable spans collapse, dense spans split](docs/variable-k.svg)
 
 A predictable phrase like "once upon a time" collapses into one vector, while a rare name or number gets its own short chunk. Each vector then carries about the same amount of information, which removes the worst case where a dense four-token span overflows a single vector. This goes straight at the quality problem above.
 
