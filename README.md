@@ -7,14 +7,22 @@ Compress every *K* tokens into one continuous vector (a CALM-style codec), then 
 
 Capabilities it demonstrates that autoregressive models can't: **parallel generation, infilling, and self-correction.**
 
-> Scope: this is a deliberately small PoC (TinyStories scale) to validate the approach and characterize the compression-vs-quality frontier. The full-scale follow-up will live in a separate repo.
+> Scope: a deliberately small PoC (TinyStories scale) to validate the approach end-to-end and characterize the compression-vs-quality frontier. The full-scale follow-up lives in a separate repo.
+
+**📄 Findings & roadmap: [`REPORT.md`](REPORT.md)** — what worked, what didn't, and where it goes next.
+
+### TL;DR of results
+- **Codec works** — K=4 tokens ↔ 1 latent at **~99.96%** reconstruction.
+- **Mechanism works** — generate-by-denoising runs end-to-end, in parallel, with infill + self-correct.
+- **Open problem** — at the aggressive **K=4** compression, generation is locally plausible but globally incoherent (the known hard frontier of continuous-latent text diffusion). The spectral variant didn't close this — a frequency basis is a representational aid, not a capacity fix. Closing it needs **scale** (→ the TPU ask).
 
 ## Structure
 ```
-src/codec.py        token <-> latent VAE codec                (Stage A)   ✅
-src/diffusion.py    latent-diffusion denoiser + sampler       (Stage B/C) ⏳
-src/spectral.py     DCT-across-positions transform (the novel bit)         ⏳
+src/codec.py        token <-> latent VAE codec                  (Stage 1)
+src/diffusion.py    latent-diffusion denoiser + gen/infill/sc   (Stage 2)
+src/spectral.py     frequency-domain (DCT) variant + ablation   (Stage 3)
 notebooks/          Colab (TPU) driver notebooks
+REPORT.md           findings + roadmap
 ```
 
 ## Run (Colab, TPU runtime)
@@ -27,6 +35,7 @@ The notebook **clones the repo fresh each session** (so it always matches your l
 **Dev loop:** edit `src/*.py` locally → `git push` → re-run the clone cell in Colab → run.
 
 ## Status
-- [x] Stage A — codec (token ↔ latent, ~99.8% reconstruction)
-- [ ] Stage B/C — latent diffusion (generation, infilling, self-correction)
-- [ ] Spectral variant (frequency-domain diffusion)
+- [x] Stage 1 — codec (token ↔ latent, ~99.96% reconstruction)
+- [x] Stage 2 — latent diffusion (generation, infilling, self-correction)
+- [x] Spectral variant (frequency-domain diffusion) + baseline ablation
+- [ ] **Next:** scale the denoiser; AST-aware & information-adaptive chunking (see [`REPORT.md`](REPORT.md))
