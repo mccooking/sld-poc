@@ -95,12 +95,11 @@ def build_latents(P):
     chunks = np.load(P["chunks"])                     # [N, K]
     nb = min(chunks.shape[0] // M, N_BLOCKS_MAX)
     chunks = chunks[: nb * M].reshape(nb, M, K)
-    enc = jax.jit(lambda toks: encode_mu(cparams, toks))   # encoder only; params closed over jit
     out = []
     for i in range(0, nb, 4096):
         b = jnp.asarray(chunks[i:i + 4096])           # [bb, M, K]
         bb = b.shape[0]
-        mu = enc(b.reshape(-1, K))                    # [bb*M, D_LATENT]
+        mu = encode_mu(cparams, b.reshape(-1, K))     # eager (one-time; avoids jit-closure hashing)
         z = (mu - mean) / std
         out.append(np.asarray(z.reshape(bb, M, D_LATENT), dtype=np.float16))
     lat = np.concatenate(out)
@@ -194,11 +193,13 @@ def train_diff(P):
 
 # ----------------------------- sampling -----------------------------
 def _load_denoiser(P):
-    """Return a jitted apply with the diffuser params closed over (not a jit arg)."""
+    """Return an apply fn with the diffuser params closed over (eager; avoids jit-closure hashing)."""
     dc = pickle.load(open(P["diff"], "rb"))
     params = jax.tree_util.tree_map(jnp.asarray, dc["params"])
     model = Denoiser()
-    return jax.jit(lambda x, tf, xs: model.apply({"params": params}, x, tf, xs))
+    def apply(x, tf, xs):
+        return model.apply({"params": params}, x, tf, xs)
+    return apply
 
 
 def ddim(apply, key, x0_known=None, known_mask=None, n=8, steps=SAMPLE_STEPS):
