@@ -1,0 +1,7 @@
+# jax / jaxlib are PROVIDED by the Colab TPU runtime — do NOT install them here
+# (pip-installing jax can clobber the TPU build). Only the extras below:
+flax
+optax
+datasets
+tiktoken
+numpy
