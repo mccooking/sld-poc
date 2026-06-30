@@ -21,7 +21,7 @@ import flax.linen as nn
 from flax.training import train_state
 import optax
 
-from codec import encode_mu, decode_latents, K, D_LATENT   # reuse the frozen codec
+from codec import encode_latents, decode_latents, K, D_LATENT   # reuse the frozen codec
 
 # ----------------------------- config -----------------------------
 M            = 16          # latent positions per sequence (M*K tokens)
@@ -99,7 +99,7 @@ def build_latents(P):
     for i in range(0, nb, 4096):
         b = jnp.asarray(chunks[i:i + 4096])           # [bb, M, K]
         bb = b.shape[0]
-        mu = encode_mu(cparams, b.reshape(-1, K))     # eager (one-time; avoids jit-closure hashing)
+        mu = encode_latents(cparams, b.reshape(-1, K))   # eager (one-time; avoids jit-closure hashing)
         z = (mu - mean) / std
         out.append(np.asarray(z.reshape(bb, M, D_LATENT), dtype=np.float16))
     lat = np.concatenate(out)

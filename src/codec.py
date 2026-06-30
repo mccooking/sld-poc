@@ -125,7 +125,7 @@ def decode_latents(params, z):
     return d @ p["Embed_0"]["embedding"].T          # [N, K, vocab]
 
 
-def encode_mu(params, tokens):
+def encode_latents(params, tokens):
     """Encode token chunks [N, K] -> latent means mu [N, D_LATENT] (encoder only).
 
     Mirrors CodecVAE's encoder (Embed_0 + Dense_0/1 + to_mu = Dense_2). Used to build
