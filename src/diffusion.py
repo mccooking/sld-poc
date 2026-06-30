@@ -67,7 +67,8 @@ def save_atomic(path, obj):
 def load_codec(P):
     ck = pickle.load(open(P["codec"], "rb"))
     st = np.load(P["stats"])
-    return ck["params"], ck["vocab"], jnp.asarray(st["mean"]), jnp.asarray(st["std"])
+    cparams = jax.tree_util.tree_map(jnp.asarray, ck["params"])
+    return cparams, ck["vocab"], jnp.asarray(st["mean"]), jnp.asarray(st["std"])
 
 
 # ----------------------------- noise schedule -----------------------------
@@ -94,12 +95,12 @@ def build_latents(P):
     chunks = np.load(P["chunks"])                     # [N, K]
     nb = min(chunks.shape[0] // M, N_BLOCKS_MAX)
     chunks = chunks[: nb * M].reshape(nb, M, K)
-    enc = jax.jit(encode_mu)                           # encoder only -> no giant vocab logits
+    enc = jax.jit(lambda toks: encode_mu(cparams, toks))   # encoder only; params closed over jit
     out = []
     for i in range(0, nb, 4096):
         b = jnp.asarray(chunks[i:i + 4096])           # [bb, M, K]
         bb = b.shape[0]
-        mu = enc(cparams, b.reshape(-1, K))           # [bb*M, D_LATENT]
+        mu = enc(b.reshape(-1, K))                    # [bb*M, D_LATENT]
         z = (mu - mean) / std
         out.append(np.asarray(z.reshape(bb, M, D_LATENT), dtype=np.float16))
     lat = np.concatenate(out)
@@ -193,13 +194,14 @@ def train_diff(P):
 
 # ----------------------------- sampling -----------------------------
 def _load_denoiser(P):
+    """Return a jitted apply with the diffuser params closed over (not a jit arg)."""
     dc = pickle.load(open(P["diff"], "rb"))
+    params = jax.tree_util.tree_map(jnp.asarray, dc["params"])
     model = Denoiser()
-    apply = jax.jit(lambda p, x, tf, xs: model.apply({"params": p}, x, tf, xs))
-    return dc["params"], apply
+    return jax.jit(lambda x, tf, xs: model.apply({"params": params}, x, tf, xs))
 
 
-def ddim(apply, params, key, x0_known=None, known_mask=None, n=8, steps=SAMPLE_STEPS):
+def ddim(apply, key, x0_known=None, known_mask=None, n=8, steps=SAMPLE_STEPS):
     """DDIM sampler. If x0_known+known_mask given, does RePaint-style inpainting."""
     shape = x0_known.shape if x0_known is not None else (n, M, D_LATENT)
     x = jax.random.normal(key, shape)
@@ -212,7 +214,7 @@ def ddim(apply, params, key, x0_known=None, known_mask=None, n=8, steps=SAMPLE_S
             key, kk = jax.random.split(key)
             noised = jnp.sqrt(ABAR[t]) * x0_known + jnp.sqrt(1 - ABAR[t]) * jax.random.normal(kk, x0_known.shape)
             x = jnp.where(km, noised, x)
-        x0 = apply(params, x, jnp.full((shape[0],), t / T), x_self)
+        x0 = apply(x, jnp.full((shape[0],), t / T), x_self)
         x_self = x0
         a_t, a_prev = ABAR[t], ABAR[t_prev]
         eps = (x - jnp.sqrt(a_t) * x0) / jnp.sqrt(1 - a_t)
@@ -232,11 +234,10 @@ def gen(P, n=8):
     import tiktoken
     enc = tiktoken.get_encoding("gpt2")
     cparams, _, mean, std = load_codec(P)
-    params, apply = _load_denoiser(P)
-    key = jax.random.PRNGKey(1)
-    apply(params, jnp.zeros((n, M, D_LATENT)), jnp.zeros((n,)), jnp.zeros((n, M, D_LATENT))).block_until_ready()  # warm jit
+    apply = _load_denoiser(P)
+    apply(jnp.zeros((n, M, D_LATENT)), jnp.zeros((n,)), jnp.zeros((n, M, D_LATENT))).block_until_ready()  # warm jit
     t0 = time.time()
-    grids = ddim(apply, params, key, n=n)
+    grids = ddim(apply, jax.random.PRNGKey(1), n=n)
     grids.block_until_ready()
     dt = time.time() - t0
     print("\n=== unconditional samples ===")
@@ -244,17 +245,17 @@ def gen(P, n=8):
         print("  -", s.replace("\n", " ").strip()[:300])
     toks = n * M * K
     print(f"\nspeed: {toks} tokens in {dt:.2f}s = {toks/dt:.0f} tok/s")
-    print(f"       CLGD used {SAMPLE_STEPS} passes for {M*K} tokens/seq; token-AR would need {M*K} sequential.")
+    print(f"       used {SAMPLE_STEPS} passes for {M*K} tokens/seq; token-AR would need {M*K} sequential.")
 
 
 def infill(P, n=6):
     import tiktoken
     enc = tiktoken.get_encoding("gpt2")
     cparams, _, mean, std = load_codec(P)
-    params, apply = _load_denoiser(P)
+    apply = _load_denoiser(P)
     lat = jnp.asarray(np.load(P["latents"])[:n], dtype=jnp.float32)
     known = np.zeros(M, bool); known[:4] = True; known[-4:] = True       # keep ends, fill middle
-    filled = ddim(apply, params, jax.random.PRNGKey(2), lat, jnp.asarray(known))
+    filled = ddim(apply, jax.random.PRNGKey(2), lat, jnp.asarray(known))
     print("\n=== infilling (ends fixed, middle generated) ===")
     for o, x in zip(_to_text(cparams, enc, lat, mean, std), _to_text(cparams, enc, filled, mean, std)):
         print("  ORIGINAL:", o.replace("\n", " ").strip()[:300])
@@ -265,12 +266,12 @@ def selfcorrect(P, n=6):
     import tiktoken
     enc = tiktoken.get_encoding("gpt2")
     cparams, _, mean, std = load_codec(P)
-    params, apply = _load_denoiser(P)
+    apply = _load_denoiser(P)
     lat = jnp.asarray(np.load(P["latents"])[:n], dtype=jnp.float32)
     j = M // 2
     corrupted = lat.at[:, j].set(jax.random.normal(jax.random.PRNGKey(3), lat[:, j].shape))
     known = np.ones(M, bool); known[j] = False                           # repair slot j from context
-    repaired = ddim(apply, params, jax.random.PRNGKey(4), lat, jnp.asarray(known))
+    repaired = ddim(apply, jax.random.PRNGKey(4), lat, jnp.asarray(known))
     print(f"\n=== self-correction (slot {j} corrupted, then repaired) ===")
     for o, c, r in zip(_to_text(cparams, enc, lat, mean, std),
                        _to_text(cparams, enc, corrupted, mean, std),
