@@ -110,6 +110,21 @@ def make_model(vocab):
     return CodecVAE(vocab=vocab)
 
 
+def decode_latents(params, z):
+    """Decode latent vectors z [N, D_LATENT] -> token logits [N, K, vocab].
+
+    Standalone so the diffusion/spectral stages can decode generated latents
+    without re-running the encoder. Mirrors CodecVAE's decoder: the compact
+    layers Dense_4/5/6 followed by the tied embedding (Embed_0). If you change
+    the encoder/decoder layer order in CodecVAE.__call__, update these names.
+    """
+    p = params
+    d = jax.nn.gelu(z @ p["Dense_4"]["kernel"] + p["Dense_4"]["bias"])
+    d = jax.nn.gelu(d @ p["Dense_5"]["kernel"] + p["Dense_5"]["bias"])
+    d = (d @ p["Dense_6"]["kernel"] + p["Dense_6"]["bias"]).reshape(z.shape[0], K, D_EMB)
+    return d @ p["Embed_0"]["embedding"].T          # [N, K, vocab]
+
+
 @functools.partial(jax.jit, static_argnums=0)
 def train_step(model, state, batch, rng):
     def loss_fn(p):
