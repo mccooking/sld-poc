@@ -1,95 +1,81 @@
-# sld-poc — Findings & Roadmap
+# Findings and roadmap
 
-*A proof-of-concept **spectral continuous-latent diffusion language model**, built from scratch in JAX on TPU (Colab v5e), at TinyStories scale.*
+A proof of concept for a continuous-latent diffusion language model with a frequency-domain variant. Written in JAX, trained on a TPU (Colab v5e), at TinyStories scale.
 
----
+## The idea
 
-## 1. The idea
+Most language models predict one discrete token at a time. This follows the CALM line of work, which predicts continuous vectors instead of tokens, and takes it toward diffusion.
 
-Standard language models emit one discrete token at a time. This PoC follows the **CALM** direction (continuous next-vector prediction) and pushes it toward **diffusion**:
+There are three pieces. A codec compresses 4 tokens into one vector and reconstructs them. A diffusion model generates a sequence of those vectors in parallel, denoising from noise over several passes instead of going left to right. A spectral variant runs the same diffusion in the frequency domain, applying a DCT across positions so that coarse structure is set first and detail last.
 
-1. A **codec** compresses every **K = 4 tokens → one continuous latent vector**.
-2. A **diffusion denoiser** generates a whole sequence of those vectors **in parallel**, by iteratively denoising from Gaussian noise — instead of left-to-right token generation.
-3. A **spectral variant** diffuses the latents in the **frequency domain** (an orthonormal DCT across positions), so generation proceeds coarse → fine.
+![End-to-end pipeline](docs/pipeline.png)
 
-Continuous latents are a natural fit for Gaussian diffusion, and the K-fold compression means the diffuser works over `L/K` positions instead of `L` tokens — two compounding efficiency axes, plus abilities autoregression lacks (infilling, self-correction).
+Continuous vectors suit Gaussian diffusion better than discrete tokens do, and packing 4 tokens into each vector means the diffuser handles a quarter as many positions. Generating in parallel also makes infilling and self-correction possible, neither of which a left-to-right model can do.
 
----
+![Autoregressive generation versus parallel diffusion](docs/ar-vs-diffusion.png)
 
-## 2. What we built
+## What I built
 
-| Stage | Module | What it does | Status |
-|------|--------|--------------|--------|
-| **1** | `src/codec.py` | VAE codec: K=4 tokens ↔ 1 latent (64-d), KL-regularized, noise-robust | ✅ |
-| **2** | `src/diffusion.py` | Self-conditioned latent-diffusion denoiser; generate / infill / self-correct | ✅ |
-| **3** | `src/spectral.py` | Frequency-domain (DCT) variant + baseline-vs-spectral comparison | ✅ |
+Three stages, each a module and a notebook:
 
-Everything runs in JAX/Flax on a single TPU core, with Drive-backed checkpoint/resume. Reproduction notebooks are in `notebooks/`.
+- `codec.py` — the VAE codec, 4 tokens to a 64-d vector (Stage 1).
+- `diffusion.py` — the denoiser plus generate, infill, and self-correct (Stage 2).
+- `spectral.py` — the DCT variant and the comparison (Stage 3).
 
----
+Everything runs in JAX/Flax on a single TPU core, with checkpoint and resume through Drive.
 
-## 3. Results
+## Results
 
-### Codec (Stage 1) — strong
-- Config: K = 4 tokens → 64-d latent (`D_EMB=128, D_HIDDEN=512`), VAE with KL + σ≈0.3 noise injection.
-- **~99.96% per-token reconstruction** after 20k steps. Reconstruction loss → ~0.001; KL fell from ~16 → ~2.6 over training, i.e. the latent space became *smoother* (more diffusion-friendly) as it got *more* accurate.
-- Round-trip of held-out text is near-perfect.
+### Codec
 
-### Diffusion + Spectral (Stages 2–3) — mechanism works, quality is the gap
-- Denoiser: bidirectional transformer (`DIM=512, DEPTH=8`) over M=16 latent positions (= 64 tokens of context), self-conditioned, x0-prediction, cosine schedule, 80k steps.
-- Training is stable; MSE on standardized latents plateaus around ~0.42 (noisy, as expected for averaged-over-noise-levels diffusion loss).
-- **Generation is locally plausible but globally incoherent** — real TinyStories vocabulary (`Lily`, `Jack`, `"once upon a time"`, `forest`), correct local fragments, but no story-level coherence (word-salad).
-- **Spectral vs baseline:** the spectral variant shows **no clear coherence advantage** at this scale — consistent with the hypothesis that a frequency basis is a *representational* aid, not a *capacity* fix.
-- **Parallel decode:** 50 denoising passes produce a 64-token sequence vs 64 sequential passes for autoregression — the structural speedup is real. (Current tok/s is measured under an *eager* sampler and is a lower bound; the jitted path is much faster.)
+Four tokens to a 64-d vector, a VAE with a KL term and noise injection during training. After 20k steps it reconstructs about 99.96% of tokens. The KL term fell from roughly 16 to 2.6 over training, so the latent space got smoother as accuracy climbed, which helps the diffusion stage. Round-tripping held-out text is near perfect.
 
----
+### Diffusion and spectral
 
-## 4. Key finding
+The denoiser is a bidirectional transformer, width 512 and depth 8, over 16 positions (64 tokens of context), self-conditioned and trained for 80k steps. Training is stable. The loss settles around 0.42 and stays noisy, which is expected for a loss averaged over noise levels.
 
-> **The codec and the full "generate-by-denoising" mechanism work end-to-end. The bottleneck is denoiser quality at aggressive K = 4 compression** — the known hard frontier of continuous-latent *text* diffusion.
+Generation produces real TinyStories words and believable short fragments, but nothing coherent at the level of a sentence or story. The spectral variant looks about the same, with no clear gain. That fits the expectation that a frequency basis reorganises the problem without adding capacity.
 
-The latent text manifold is unforgiving: small errors in a 64-d vector decode to the *wrong tokens* (text decode is a sharp function, unlike images where a blurry latent is just a blurry pixel). A modest denoiser trained on a small budget can't model that manifold precisely enough, and — importantly — **changing the basis (spectral) doesn't add the missing capacity.** Coherent generation needs *scale*, not a different transform.
+![Spectral diffusion: DCT across positions, denoise coarse to fine, inverse DCT](docs/spectral.png)
 
-This is a clean, honest result: the architecture is sound; the open problem is precisely characterized.
+The parallel decode does work: 50 denoising passes produce a 64-token sequence, against 64 sequential steps for an autoregressive model. The throughput figure I currently have comes from an unoptimised sampler and understates the real speed.
 
----
+## Where it stands
 
-## 5. Roadmap
+The codec and the generate-by-denoising mechanism both work. What doesn't yet is generation quality at 4 tokens per vector.
 
-### 5.1 Scale the denoiser *(the direct fix)*
-Bigger model, more steps, longer context (M), and few-step distillation. This is the most likely path from word-salad to coherent text, and the primary use of additional compute.
+Text decoding is sharp: a small error in a 64-d vector decodes to the wrong token, unlike an image, where a slightly-off latent is just a slightly blurry pixel. A small denoiser on a small budget can't land on the latent manifold precisely enough, and moving to a frequency basis doesn't change that. Coherent text needs scale.
 
-### 5.2 AST-aware chunking *(for code)*
-Don't waste latent capacity on syntax a parser already knows. Re-render the deterministic skeleton **by rule** and encode only the content holes:
+## Roadmap
 
-```
-fn <1> ( ) -> <2> { <3> <4> }
-   ▲name      ▲ret   ▲body…
-```
+### Scale the denoiser
 
-A function becomes a **handful of content-vectors** (`<1>…<4>`) instead of the ~15–20 tokens it normally costs — and because `fn`, `(`, `)`, `->`, `{`, `}` are printed by rule, **the output is syntactically valid by construction** and that fraction of tokens is *lossless*. (Tree-sitter / `syn` provides the structure at data-prep time only; it never touches inference.)
+A bigger model, more steps, longer context, and few-step distillation. This is the direct fix and the main thing more compute buys.
 
-### 5.3 Information-adaptive (variable-K) chunking
-Allocate vectors by **content**, not token count, so each vector carries ~constant information:
-- Low-entropy, predictable spans — e.g. **"once upon a time" → 1 vector**.
-- High-entropy spans (rare names, numbers, identifiers) → their own **short** chunks.
+### Structure-aware chunking for code
 
-This rate-matches the payload to the codec's fixed capacity, removing the worst case (a dense 4-token chunk overflowing one vector) and keeping reconstruction uniformly high — directly attacking the quality gap from §4.
+Don't spend vectors on syntax a parser already knows. Print the fixed skeleton by rule and only encode the parts that vary.
 
-### 5.4 Decoder-aware training & self-correction at scale
-Train the denoiser with a term that pushes it toward *decodable* latents (not just MSE-close ones), and use the codec's own reconstruction/prior signal to flag and re-denoise suspect chunks — the self-correction loop diffusion uniquely enables.
+![AST chunking: a function skeleton with content holes encoded as vectors](docs/ast-chunking.png)
 
----
+A function such as `fn <name>() -> <ret> { <body> }` becomes a few content vectors instead of the 15 to 20 tokens it usually costs. Because the keywords, brackets, and arrows are printed by rule, the output is always syntactically valid, and that share of the tokens is reconstructed exactly. The parser is only used when preparing data, never at generation time.
 
-## 6. Why this needs TPUs
+### Variable-size chunking
 
-Each item in §5 — scaling the denoiser, plus learning structural/adaptive chunkers and retraining the codec around them — is compute-bound. The PoC validates the pipeline end-to-end on a single TPU core and pinpoints the bottleneck; closing it requires substantial parallel compute. That is the work we are requesting TPU access for.
+Allocate vectors by how much information a span carries, not by token count.
 
----
+![Variable-size chunking: predictable spans collapse, dense spans split](docs/variable-k.png)
 
-## 7. Reproduce
-- `notebooks/01_codec.ipynb` — train the codec
-- `notebooks/02_diffusion.ipynb` — latent diffusion + demos
-- `notebooks/03_spectral.ipynb` — spectral variant + comparison
+A predictable phrase like "once upon a time" collapses into one vector, while a rare name or number gets its own short chunk. Each vector then carries about the same amount of information, which removes the worst case where a dense four-token span overflows a single vector. This goes straight at the quality problem above.
 
-Each notebook clones this repo fresh and runs in-kernel on a Colab TPU runtime.
+### Decoder-aware training and self-correction
+
+Train the denoiser with a term that rewards latents which decode correctly, not only ones that are close in MSE, and use the codec's own reconstruction signal to find and redo bad chunks.
+
+## Why this needs TPUs
+
+Each of those needs compute: a larger denoiser, retraining the codec around new chunkers, and longer runs. The PoC shows the pipeline works on a single TPU core and pins down the bottleneck. Closing it is what the TPU request is for.
+
+## Reproducing
+
+`notebooks/01_codec.ipynb`, `02_diffusion.ipynb`, and `03_spectral.ipynb`. Each clones the repo and runs in-kernel on a Colab TPU runtime.

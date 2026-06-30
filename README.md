@@ -1,41 +1,31 @@
 # sld-poc
 
-A **proof-of-concept** continuous-latent **diffusion language model**, with a **spectral** (frequency-domain) variant — built in JAX/Flax for **TPU (v5e)**.
+A proof of concept for generating text with diffusion in a continuous latent space, plus a frequency-domain variant. Written in JAX, trained on TPU, at small (TinyStories) scale.
 
-## Idea
-Compress every *K* tokens into one continuous vector (a CALM-style codec), then **generate text by denoising a grid of those vectors in parallel** — diffusion, instead of one token at a time. The spectral variant diffuses the latents in the **frequency domain** (a DCT across positions), so generation proceeds coarse → fine for better global structure.
+It works in three parts. A codec turns every 4 tokens into one vector and can rebuild them. A diffusion model then generates whole sequences of these vectors at once, starting from noise and cleaning it up over a few passes, rather than emitting tokens left to right. The spectral variant runs that same diffusion on a DCT of the vectors, so the model settles the coarse structure first and fills in detail afterwards.
 
-Capabilities it demonstrates that autoregressive models can't: **parallel generation, infilling, and self-correction.**
+![Pipeline: tokens to latent vectors, diffusion, and back to tokens](docs/pipeline.png)
 
-> Scope: a deliberately small PoC (TinyStories scale) to validate the approach end-to-end and characterize the compression-vs-quality frontier. The full-scale follow-up lives in a separate repo.
+Since one vector carries 4 tokens, the diffuser deals with a quarter as many positions as a token-level model, and because it denoises in parallel it isn't locked into left-to-right order. The same property lets it infill and correct its own output, which autoregressive models can't.
 
-**📄 Findings & roadmap: [`REPORT.md`](REPORT.md)** — what worked, what didn't, and where it goes next.
+Findings and next steps are in [REPORT.md](REPORT.md). The short version:
 
-### TL;DR of results
-- **Codec works** — K=4 tokens ↔ 1 latent at **~99.96%** reconstruction.
-- **Mechanism works** — generate-by-denoising runs end-to-end, in parallel, with infill + self-correct.
-- **Open problem** — at the aggressive **K=4** compression, generation is locally plausible but globally incoherent (the known hard frontier of continuous-latent text diffusion). The spectral variant didn't close this — a frequency basis is a representational aid, not a capacity fix. Closing it needs **scale** (→ the TPU ask).
+- The codec reconstructs tokens at about 99.96%.
+- The full generate-by-denoising loop runs end to end.
+- At 4 tokens per vector the output has real words and local phrases but no overall coherence, and the spectral variant didn't change that. Getting coherent text looks like a question of model size, not of the transform.
 
-## Structure
-```
-src/codec.py        token <-> latent VAE codec                  (Stage 1)
-src/diffusion.py    latent-diffusion denoiser + gen/infill/sc   (Stage 2)
-src/spectral.py     frequency-domain (DCT) variant + ablation   (Stage 3)
-notebooks/          Colab (TPU) driver notebooks
-REPORT.md           findings + roadmap
-```
+## Layout
 
-## Run (Colab, TPU runtime)
-1. Push this repo to GitHub (public, or you'll need a token in Colab to clone).
-2. Open `notebooks/01_codec.ipynb` in Colab; Runtime → Change runtime type → **TPU**.
-3. Run top to bottom.
+    src/codec.py       the codec
+    src/diffusion.py   the diffusion denoiser, plus generate / infill / self-correct
+    src/spectral.py    the frequency-domain variant and comparison
+    notebooks/         one Colab TPU notebook per stage
+    REPORT.md          findings and roadmap
 
-The notebook **clones the repo fresh each session** (so it always matches your latest `git push`) and persists **data + checkpoints** to a separate `sld-poc-data/` folder on Google Drive. Checkpoints are written every ~3 min, and re-running the train cell auto-resumes after a disconnect.
+## Running it
 
-**Dev loop:** edit `src/*.py` locally → `git push` → re-run the clone cell in Colab → run.
+Open a notebook in Colab on a TPU runtime and run it top to bottom. Each one clones the repo, trains, and writes checkpoints to Google Drive so you can stop and pick up later. Order: `01_codec`, then `02_diffusion`, then `03_spectral`.
 
 ## Status
-- [x] Stage 1 — codec (token ↔ latent, ~99.96% reconstruction)
-- [x] Stage 2 — latent diffusion (generation, infilling, self-correction)
-- [x] Spectral variant (frequency-domain diffusion) + baseline ablation
-- [ ] **Next:** scale the denoiser; AST-aware & information-adaptive chunking (see [`REPORT.md`](REPORT.md))
+
+The codec, the diffusion model, and the spectral variant are all done. Next is a larger denoiser and two chunking ideas, structure-aware and variable-size, both described in [REPORT.md](REPORT.md).
