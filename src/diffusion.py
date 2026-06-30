@@ -21,7 +21,7 @@ import flax.linen as nn
 from flax.training import train_state
 import optax
 
-from codec import CodecVAE, decode_latents, K, D_LATENT   # reuse the frozen codec
+from codec import encode_mu, decode_latents, K, D_LATENT   # reuse the frozen codec
 
 # ----------------------------- config -----------------------------
 M            = 16          # latent positions per sequence (M*K tokens)
@@ -91,15 +91,15 @@ def build_latents(P):
     if os.path.exists(P["latents"]):
         print(f"latents exist -> {P['latents']}"); return
     cparams, vocab, mean, std = load_codec(P)
-    codec = CodecVAE(vocab)
     chunks = np.load(P["chunks"])                     # [N, K]
     nb = min(chunks.shape[0] // M, N_BLOCKS_MAX)
     chunks = chunks[: nb * M].reshape(nb, M, K)
+    enc = jax.jit(encode_mu)                           # encoder only -> no giant vocab logits
     out = []
     for i in range(0, nb, 4096):
         b = jnp.asarray(chunks[i:i + 4096])           # [bb, M, K]
         bb = b.shape[0]
-        mu = codec.apply({"params": cparams}, b.reshape(-1, K), noise_std=0.0, sample=False)[1]
+        mu = enc(cparams, b.reshape(-1, K))           # [bb*M, D_LATENT]
         z = (mu - mean) / std
         out.append(np.asarray(z.reshape(bb, M, D_LATENT), dtype=np.float16))
     lat = np.concatenate(out)

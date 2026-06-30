@@ -125,6 +125,19 @@ def decode_latents(params, z):
     return d @ p["Embed_0"]["embedding"].T          # [N, K, vocab]
 
 
+def encode_mu(params, tokens):
+    """Encode token chunks [N, K] -> latent means mu [N, D_LATENT] (encoder only).
+
+    Mirrors CodecVAE's encoder (Embed_0 + Dense_0/1 + to_mu = Dense_2). Used to build
+    the latent dataset WITHOUT materializing the huge [N, K, vocab] decode logits.
+    """
+    p = params
+    e = p["Embed_0"]["embedding"][tokens].reshape(tokens.shape[0], -1)
+    h = jax.nn.gelu(e @ p["Dense_0"]["kernel"] + p["Dense_0"]["bias"])
+    h = jax.nn.gelu(h @ p["Dense_1"]["kernel"] + p["Dense_1"]["bias"])
+    return h @ p["Dense_2"]["kernel"] + p["Dense_2"]["bias"]      # [N, D_LATENT]
+
+
 @functools.partial(jax.jit, static_argnums=0)
 def train_step(model, state, batch, rng):
     def loss_fn(p):
